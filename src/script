@@ -26,9 +26,13 @@ import sys
 import json
 import hvac
 
+## These need to be defined in a template and injected 
 VAULT_ROLE='server_certs'
 VAULT_CERT_TTL='1d'
 VAULT_MOUNT_POINT='pki_int'
+VAULT_ADDR='http://127.0.0.1:8200'
+VAULT_ROLE_PATH=".role"
+VAULT_SECRET_PATH=".secret"
 
 # return a unique list of values from delimitedString
 def getDelimitedValues(delimitedString):
@@ -58,6 +62,22 @@ def buildDNSEntries(domains, subdomains):
 
    return [*dnsEntries]
 
+# authenticate to vault and terminated if unsuccessful
+def vaultLogin (role_id_path, secret_path):
+   # TODO: read role id and secret from the files
+
+   # authenticate to vault and get an access token
+   client = hvac.Client(
+      url=VAULT_ADDR,
+      token='dev-only-token',
+   )
+
+   if client.is_authenticated() == False:
+      print ('Failed to authenticate - exiting')
+      sys._exit()
+
+   return client
+
 # process fields that are multi-valued '/' separated
 subjects = getDelimitedValues(os.environ['PKI_SCRIPT_SUBJECT'])
 domains = getDelimitedValues(os.environ['PKI_SCRIPT_DOMAINS'])
@@ -65,42 +85,23 @@ subdomains = getDelimitedValues(os.environ['PKI_SCRIPT_SUBDOMAINS'])
 
 certDNSvalues = buildDNSEntries(domains, subdomains)
 
-
-
-print('create certificate')
-print('name: ' + VAULT_ROLE)  # This is the PKI secret role that sets the policy
-print('common_name: ' + ", ".join(subjects))
-
-# If DNS names where specified
-if len(certDNSvalues) > 1:
-   print('alt_names: ' + ", ".join(certDNSvalues))
-
-print('ttl: ' + VAULT_CERT_TTL)
-print('format: pem')
-print('private_key_format: pem')
-
-client = hvac.Client(
-    url='http://127.0.0.1:8200',
-    token='dev-only-token',
-)
-
-if client.is_authenticated() == False:
-   print ('Failed to authenticate - exiting')
-   sys._exit()
-
-cert_dict = dict()
+cert_extra_parms = dict()
 
 if len(certDNSvalues) > 1:
-   cert_dict['alt_names'] = ", ".join(certDNSvalues)
-cert_dict['format'] = 'pem'
-cert_dict['private_key_format'] = 'pem'
-cert_dict['ttl'] = VAULT_CERT_TTL
+   cert_extra_parms['alt_names'] = ", ".join(certDNSvalues)
+cert_extra_parms['format'] = 'pem'
+cert_extra_parms['private_key_format'] = 'pem'
+cert_extra_parms['ttl'] = VAULT_CERT_TTL
+
+client = vaultLogin(VAULT_ROLE_PATH, VAULT_SECRET_PATH)
 
 cert_response = generate_certificate_response = client.secrets.pki.generate_certificate(
    name=VAULT_ROLE,
    mount_point=VAULT_MOUNT_POINT,
    common_name=", ".join(subjects),
-   extra_params=cert_dict
+   extra_params=cert_extra_parms
    )
 
 print("certificate: {} ".format(cert_response))
+
+# TODO: write the results to the expected files
