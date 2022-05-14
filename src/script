@@ -1,38 +1,63 @@
 #!/usr/bin/env python3
 
 # $PKI_SCRIPT_REALM
-# Contains the name of the current PKI realm, set in item.name parameter.
+#     Contains the name of the current PKI realm, set in item.name parameter.
 # $PKI_SCRIPT_FQDN
-# Contains Fully Qualified Domain Name used as the default domain if the realm does not specify one in it's name.
+#     Contains Fully Qualified Domain Name used as the default domain if the
+#     realm does not specify one in it's name.
 # $PKI_SCRIPT_SUBJECT
-# Contains the Distinguished Name, or subject of the certificate, each element separated by the / character, similar to the format of the openssl req -subj option.
+#     Contains the Distinguished Name, or subject of the certificate, each
+#     element separated by the / character, similar to the format of the
+#     openssl req -subj option.
 # $PKI_SCRIPT_DOMAINS
-# List of apex (root) domains configured for the realm, separated by the / character.
+#     List of apex (root) domains configured for the realm, separated by
+#     the / character.
 # $PKI_SCRIPT_SUBDOMAINS
-# List of subdomains which should be added to each apex domain, each one separated by the / character. The special _wildcard_ name means a wildcard subdomain (*.example.com).
+#     List of subdomains which should be added to each apex domain, each one
+#     separated by the / character. The special _wildcard_ name means a 
+#     wildcard subdomain (*.example.com).
 # $PKI_SCRIPT_PRIVATE_KEY
-# Absolute path to the private key of the current PKI realm.
+#     Absolute path to the private key of the current PKI realm.
 # $PKI_SCRIPT_DEFAULT_CRT
-# Absolute path to the current PKI realm certificate chain, expected to be used in the application configuration files.
+#     Absolute path to the current PKI realm certificate chain, expected to be
+#     used in the application configuration files.
 # $PKI_SCRIPT_DEFAULT_KEY
-# Absolute path to the current PKI realm private key, expected to be used in the application configuration files.
+#     Absolute path to the current PKI realm private key, expected to be used in
+#     the application configuration files.
 # $PKI_SCRIPT_DEFAULT_PEM
-# Absolute path to the current PKI realm combined private key and certificate chain, expected to be used in the application configuration files.
+#     Absolute path to the current PKI realm combined private key and certificate
+#     chain, expected to be used in the application configuration files.
 # $PKI_SCRIPT_STATE
-# A list of PKI realm states separated by the , character. You can inspect this variable to determine the current state of the current realm (initialization, activation of new certificates, changed files) and react to it in the script.
+#     A list of PKI realm states separated by the , character. You can inspect
+#     this variable to determine the current state of the current 
+#     realm (initialization, activation of new certificates, changed files) and
+#     react to it in the script.
 
+# This script needs to consume the following as inputs:
+#    private/key.pem: $PKI_SCRIPT_PRIVATE_KEY has fully qualified path
+#
+# This script needs to creates the following:
+#    external/cert.pem: $PKI_SCRIPT_DEFAULT_CRT - this is the signed certificate
+#    external/intermediate.pem: 
 import os
 import sys
 import json
 import hvac
 
 ## These need to be defined in a template and injected 
-VAULT_ROLE='server_certs'
+VAULT_ROLE='server_cert'
 VAULT_CERT_TTL='1d'
 VAULT_MOUNT_POINT='pki_int'
-VAULT_ADDR='http://127.0.0.1:8200'
+VAULT_ADDR='https://vault2.mybwright.com:8200'
 VAULT_ROLE_PATH=".role"
 VAULT_SECRET_PATH=".secret"
+
+# return the 1st line in filename
+def readLine (filename):
+   with open(filename, 'r') as f:
+      line = f.readline();
+
+   return line
 
 # return a unique list of values from delimitedString
 def getDelimitedValues(delimitedString):
@@ -62,24 +87,38 @@ def buildDNSEntries(domains, subdomains):
 
    return [*dnsEntries]
 
-# authenticate to vault and terminated if unsuccessful
-def vaultLogin (role_id_path, secret_path):
-   # TODO: read role id and secret from the files
-
-   # authenticate to vault and get an access token
-   client = hvac.Client(
-      url=VAULT_ADDR,
-      token='dev-only-token',
-   )
-
-   if client.is_authenticated() == False:
-      print ('Failed to authenticate - exiting')
-      sys._exit()
+# Setup the connection to Vault cluster
+def getVaultClient (): 
+   client = hvac.Client(url=VAULT_ADDR, )
 
    return client
 
+# Authenticate to vault using RoleID
+def vaultLogin_roleid ():
+   roleid = readLine(VAULT_ROLE_PATH)
+   secret = readLine(VAULT_SECRET_PATH)
+
+   client = getVaultClient()
+
+   # authenticate to vault and get an access token
+   client.auth.approle.login(
+      role_id=roleid,
+      secret_id=secret,
+   )
+
+   assert client.is_authenticated()
+   return client
+
+# Authenticate to vault using a token
+def vaultLogin_token ():
+   client = getVaultClient()
+
+   client.token=os.environ['VAULT_TOKEN']
+
+   assert client.is_authenticated()
+   return client
+
 # process fields that are multi-valued '/' separated
-subjects = getDelimitedValues(os.environ['PKI_SCRIPT_SUBJECT'])
 domains = getDelimitedValues(os.environ['PKI_SCRIPT_DOMAINS'])
 subdomains = getDelimitedValues(os.environ['PKI_SCRIPT_SUBDOMAINS'])
 
@@ -93,15 +132,14 @@ cert_extra_parms['format'] = 'pem'
 cert_extra_parms['private_key_format'] = 'pem'
 cert_extra_parms['ttl'] = VAULT_CERT_TTL
 
-client = vaultLogin(VAULT_ROLE_PATH, VAULT_SECRET_PATH)
+client = vaultLogin_roleid ()
 
 cert_response = generate_certificate_response = client.secrets.pki.generate_certificate(
    name=VAULT_ROLE,
    mount_point=VAULT_MOUNT_POINT,
-   common_name=", ".join(subjects),
+   common_name=os.environ['PKI_SCRIPT_FQDN'],
    extra_params=cert_extra_parms
    )
 
 print("certificate: {} ".format(cert_response))
 
-# TODO: write the results to the expected files
